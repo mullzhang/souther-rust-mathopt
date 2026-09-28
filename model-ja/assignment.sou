@@ -3,32 +3,29 @@
 module 例.作業割当
 
 // valid制約：値の表現、識別子、一意に解釈できる参照。
-// 入力の規模と値域を限定し、両方の実行環境で整数計算の精度を保つ。
+// 実行時の規模や数値の上限はRust側で検査し、ドメインのvalid制約とは分ける。
 data 作業者番号 = String
-    invariant String.matches("[A-Za-z][A-Za-z0-9_-]{0,63}", value)
+    invariant String.matches("[A-Za-z][A-Za-z0-9_-]*", value)
 data 作業番号 = String
-    invariant String.matches("[A-Za-z][A-Za-z0-9_-]{0,63}", value)
+    invariant String.matches("[A-Za-z][A-Za-z0-9_-]*", value)
 data 分数 = Int
-    invariant value >= 0 && value <= 1440
+    invariant value >= 0
 data 所要分数 = Int
-    invariant value > 0 && value <= 1440
+    invariant value > 0
 data 負荷分数 = Int
-    invariant value >= 0 && value <= 46080
+    invariant value >= 0
 data 割当費用 = Int
-    invariant value >= 0 && value <= 1000000
+    invariant value >= 0
 data 分単価 = Int
-    invariant value > 0 && value <= 10000
+    invariant value > 0
 data 総費用 = Int
-    invariant value >= 0 && value <= 8000000000
+    invariant value >= 0
 
 data 作業者 = { 番号: 作業者番号, 通常稼働分数: 分数, 残業上限分数: 分数, 残業分単価: 分単価, 残業目安分数: 分数, 残業超過分単価: 分単価 }
 data 作業 = { 番号: 作業番号 }
 // 担当不可でも所要時間と費用を定義する。
 data 担当候補 = { 作業者番号: 作業者番号, 作業番号: 作業番号, 分数: 所要分数, 費用: 割当費用, 担当可能: Bool }
 data 割当問題 = { 作業者一覧: List<作業者>, 作業一覧: List<作業>, 担当候補一覧: List<担当候補> }
-    invariant 作業者数の上限 = List.length(作業者一覧) <= 16
-    invariant 作業数の上限 = List.length(作業一覧) <= 32
-    invariant 担当候補数の上限 = List.length(担当候補一覧) <= 512
     invariant 作業者番号の一意性 = List.all(作業者要素 -> List.length(List.filter(比較対象 -> 比較対象.番号 == 作業者要素.番号, 作業者一覧)) == 1, 作業者一覧)
     invariant 作業番号の一意性 = List.all(作業要素 -> List.length(List.filter(比較対象 -> 比較対象.番号 == 作業要素.番号, 作業一覧)) == 1, 作業一覧)
     invariant 担当候補の一意性 = List.all(候補要素 -> List.length(List.filter(比較候補 -> 比較候補.作業者番号 == 候補要素.作業者番号 && 比較候補.作業番号 == 候補要素.作業番号, 担当候補一覧)) == 1, 担当候補一覧)
@@ -39,7 +36,6 @@ data 割当問題 = { 作業者一覧: List<作業者>, 作業一覧: List<作�
 // 負荷と費用は評価器で計算し、候補の入力項目には持たせない。
 data 割当 = { 作業者番号: 作業者番号, 作業番号: 作業番号 }
 data 候補計画 = { 割当一覧: List<割当> }
-    invariant 割当数の上限 = List.length(割当一覧) <= 512
     invariant 割当組合せの一意性 = List.all(割当要素 -> List.length(List.filter(比較割当 -> 比較割当.作業者番号 == 割当要素.作業者番号 && 比較割当.作業番号 == 割当要素.作業番号, 割当一覧)) == 1, 割当一覧)
 // 問題と候補を組にした評価対象の生成時に、参照に関するvalid制約を検査する。
 data 評価対象 = { 問題: 割当問題, 計画: 候補計画 }

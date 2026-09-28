@@ -279,16 +279,10 @@ fn souther_rejects_invalid_problem_data_before_solving() {
     p["workers"][0]["regularMinutes"] = json!(-1);
     cases.push(p);
     let mut p = original.clone();
-    p["workers"][0]["overtimeLimit"] = json!(1441);
-    cases.push(p);
-    let mut p = original.clone();
     p["workers"][0]["overtimeRate"] = json!(0);
     cases.push(p);
     let mut p = original.clone();
     p["workers"][0]["overtimePenalty"] = json!(0);
-    cases.push(p);
-    let mut p = original.clone();
-    p["offers"][0]["cost"] = json!(1000001);
     cases.push(p);
     let mut p = original.clone();
     p["offers"][0]["minutes"] = json!(0.5);
@@ -301,13 +295,6 @@ fn souther_rejects_invalid_problem_data_before_solving() {
     cases.push(p);
     let mut p = original.clone();
     p["offers"][0].as_object_mut().unwrap().remove("qualified");
-    cases.push(p);
-    let mut p = original;
-    p["jobs"] = json!(
-        (0..33)
-            .map(|i| json!({"id":format!("j{i}")}))
-            .collect::<Vec<_>>()
-    );
     cases.push(p);
     for (i, p) in cases.iter().enumerate() {
         let r = solve(p);
@@ -326,6 +313,174 @@ fn souther_rejects_invalid_problem_data_before_solving() {
             .unwrap()
             .exit_code,
         2
+    );
+}
+
+#[test]
+fn domain_construction_has_no_host_size_or_numeric_caps() {
+    let workers: Vec<_> = (0..17)
+        .map(|i| json!({"id":format!("{}w{i}", "w".repeat(65)),"regularMinutes":1441,"overtimeLimit":1441,"overtimeRate":10001,"overtimeTarget":1441,"overtimePenalty":10001}))
+        .collect();
+    let jobs: Vec<_> = (0..33).map(|i| json!({"id":format!("j{i}")})).collect();
+    let mut offers = Vec::new();
+    let mut assignments = Vec::new();
+    for w in &workers {
+        for j in &jobs {
+            offers.push(json!({"workerId":w["id"],"jobId":j["id"],"minutes":1441,"cost":1000001,"qualified":true}));
+            assignments.push(json!({"workerId":w["id"],"jobId":j["id"]}));
+        }
+    }
+    let source = json!({
+        "problem":{"workers":workers,"jobs":jobs,"offers":offers},
+        "plan":{"assignments":assignments}
+    });
+    let lib = library();
+    lib.run(|run| {
+        let input = EvaluationInput::decode(run, &source.to_string())
+            .unwrap()
+            .into_result()
+            .unwrap();
+        assert_eq!(input.plan().assignments().len(), 561);
+        assert_eq!(
+            serde_json::from_str::<Value>(&input.encode()).unwrap(),
+            source
+        );
+        assert_eq!(made(LoadMinutes::new(run, 46081)).unwrap().value(), 46081);
+        assert_eq!(
+            made(TotalCost::new(run, 8000000001)).unwrap().value(),
+            8000000001
+        );
+    })
+    .unwrap();
+}
+
+struct MustNotRun;
+impl Solve for MustNotRun {
+    fn apply<'run>(
+        &self,
+        _run: &mut Run<'run>,
+        _problem: AssignmentProblem<'run>,
+    ) -> Result<SearchOutcome<'run>, HostError> {
+        panic!("execution limits must be checked before invoking the solver");
+    }
+}
+
+#[test]
+fn execution_limits_are_separate_from_validity_and_block_solve_review_and_confirm() {
+    let mut cases = Vec::new();
+    for (path, value, limit) in [
+        ("/workers/0/regularMinutes", 1441, 1440),
+        ("/workers/0/overtimeLimit", 1441, 1440),
+        ("/workers/0/overtimeTarget", 1441, 1440),
+        ("/workers/0/overtimeRate", 10001, 10000),
+        ("/workers/0/overtimePenalty", 10001, 10000),
+        ("/offers/0/minutes", 1441, 1440),
+        ("/offers/0/cost", 1000001, 1000000),
+        ("/offers/0/cost", i64::MAX, 1000000),
+    ] {
+        let mut p = fixture("regular");
+        *p.pointer_mut(path).unwrap() = json!(value);
+        cases.push((p, path, value, limit));
+    }
+    for (list, count, limit) in [("workers", 17, 16), ("jobs", 33, 32)] {
+        let mut p = fixture("regular");
+        let mut entries = Vec::new();
+        for i in 0..count {
+            let mut entry = p[list][0].clone();
+            entry["id"] = json!(format!("id{i}"));
+            entries.push(entry);
+        }
+        p[list] = json!(entries);
+        p["offers"] = json!([]);
+        cases.push((
+            p,
+            if list == "workers" {
+                "/workers"
+            } else {
+                "/jobs"
+            },
+            count,
+            limit,
+        ));
+    }
+    for list in ["workers", "jobs"] {
+        let mut p = fixture("regular");
+        p[list][0]["id"] = json!("x".repeat(65));
+        p["offers"] = json!([]);
+        cases.push((
+            p,
+            if list == "workers" {
+                "/workers/0/id"
+            } else {
+                "/jobs/0/id"
+            },
+            65,
+            64,
+        ));
+    }
+    let app = app();
+    let lib = library();
+    for (p, path, actual, limit) in cases {
+        let input = p.to_string();
+        lib.run(|run| {
+            let problem = AssignmentProblem::decode(run, &input)
+                .unwrap()
+                .into_result()
+                .unwrap();
+            let encoded: Value = serde_json::from_str(&problem.encode()).unwrap();
+            assert_eq!(encoded, p, "{path}");
+            // Direct optimizer users cannot bypass the arithmetic bounds either.
+            let optimizer =
+                souther_rust_mathopt::optimizer::Optimizer::new(SolveOptions::default()).unwrap();
+            assert!(
+                optimizer
+                    .apply(run, problem)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("execution limit")
+            );
+            assert!(optimizer.statistics.borrow().is_none());
+        })
+        .unwrap();
+        let expected = json!({"error":"execution_limit","path":path,"actual":actual,"limit":limit});
+        for result in [
+            app.solve(&input, SolveOptions::default()).unwrap(),
+            app.solve_with(&input, &MustNotRun).unwrap(),
+            app.review(&input, "{\"assignments\":[]}", None).unwrap(),
+            app.review(&input, "{\"assignments\":[]}", Some(false))
+                .unwrap(),
+            app.review(&input, "{\"assignments\":[]}", Some(true))
+                .unwrap(),
+        ] {
+            assert_eq!(result.exit_code, 7, "{path}: {}", result.document);
+            assert_eq!(result.document, expected);
+        }
+    }
+}
+
+#[test]
+fn malformed_candidates_still_report_valid_issues_with_an_oversized_problem() {
+    let mut problem = fixture("regular");
+    problem["workers"][0]["overtimeLimit"] = json!(1441);
+    let plan = json!({"assignments":[{"workerId":"missing","jobId":"job1"}]});
+    let r = review(&problem, &plan);
+    assert_eq!(r.exit_code, 2);
+    assert!(r.document.get("issues").is_some());
+    assert!(r.document.get("error").is_none());
+}
+
+#[test]
+fn inclusive_execution_limit_boundaries_still_solve() {
+    let workers: Vec<_> = (0..16).map(|i| json!({"id":format!("w{i:063}"),"regularMinutes":1440,"overtimeLimit":1440,"overtimeRate":10000,"overtimeTarget":1440,"overtimePenalty":10000})).collect();
+    let jobs: Vec<_> = (0..32).map(|i| json!({"id":format!("j{i:063}")})).collect();
+    let offers: Vec<_> = jobs.iter().enumerate().map(|(i,j)| json!({"workerId":workers[i/2]["id"],"jobId":j["id"],"minutes":1440,"cost":1000000,"qualified":true})).collect();
+    let r = solve(&json!({"workers":workers,"jobs":jobs,"offers":offers}));
+    assert_eq!(r.exit_code, 0, "{}", r.document);
+    assert_eq!(r.document["review"]["evaluation"]["feasible"], true);
+    assert_eq!(
+        r.document["review"]["evaluation"]["objectiveValue"],
+        262400000
     );
 }
 
@@ -665,4 +820,30 @@ fn cli_reports_structured_hard_violations_without_technical_errors() {
         d["evaluation"]["hardViolations"].as_array().unwrap().len(),
         3
     );
+}
+
+#[test]
+fn cli_distinguishes_execution_limits_from_invalidity_and_infeasibility() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/cli-execution-limit.json");
+    let mut problem = fixture("regular");
+    problem["workers"][0]["overtimeLimit"] = json!(1441);
+    std::fs::write(&path, problem.to_string()).unwrap();
+    for command in ["solve", "review", "confirm"] {
+        let mut cli = Command::new(env!("CARGO_BIN_EXE_souther-rust-mathopt"));
+        cli.current_dir(env!("CARGO_MANIFEST_DIR"))
+            .arg(command)
+            .arg(&path);
+        if command != "solve" {
+            cli.arg("examples/overtime-plan.json");
+        }
+        let r = cli.output().unwrap();
+        assert_eq!(r.status.code(), Some(7), "{command}: {:?}", r);
+        assert!(r.stderr.is_empty());
+        let document: Value = serde_json::from_slice(&r.stdout).unwrap();
+        assert_eq!(
+            document,
+            json!({"error":"execution_limit","path":"/workers/0/overtimeLimit","actual":1441,"limit":1440})
+        );
+    }
+    std::fs::remove_file(path).unwrap();
 }

@@ -1,32 +1,29 @@
 module example.assignment
 
 // valid: value representation, identifiers and unambiguous references.
-// The bounded input envelope keeps integer arithmetic exact in both runtimes.
+// Execution size and numeric limits belong to the Rust host, not domain validity.
 data WorkerId = String
-    invariant String.matches("[A-Za-z][A-Za-z0-9_-]{0,63}", value)
+    invariant String.matches("[A-Za-z][A-Za-z0-9_-]*", value)
 data JobId = String
-    invariant String.matches("[A-Za-z][A-Za-z0-9_-]{0,63}", value)
+    invariant String.matches("[A-Za-z][A-Za-z0-9_-]*", value)
 data Minutes = Int
-    invariant value >= 0 && value <= 1440
+    invariant value >= 0
 data Duration = Int
-    invariant value > 0 && value <= 1440
+    invariant value > 0
 data LoadMinutes = Int
-    invariant value >= 0 && value <= 46080
+    invariant value >= 0
 data Cost = Int
-    invariant value >= 0 && value <= 1000000
+    invariant value >= 0
 data MinuteRate = Int
-    invariant value > 0 && value <= 10000
+    invariant value > 0
 data TotalCost = Int
-    invariant value >= 0 && value <= 8000000000
+    invariant value >= 0
 
 data Worker = { id: WorkerId, regularMinutes: Minutes, overtimeLimit: Minutes, overtimeRate: MinuteRate, overtimeTarget: Minutes, overtimePenalty: MinuteRate }
 data Job = { id: JobId }
 // Prices and durations exist even when qualified is false.
 data Offer = { workerId: WorkerId, jobId: JobId, minutes: Duration, cost: Cost, qualified: Bool }
 data AssignmentProblem = { workers: List<Worker>, jobs: List<Job>, offers: List<Offer> }
-    invariant workerLimit = List.length(workers) <= 16
-    invariant jobLimit = List.length(jobs) <= 32
-    invariant offerLimit = List.length(offers) <= 512
     invariant uniqueWorkers = List.all(w -> List.length(List.filter(v -> v.id == w.id, workers)) == 1, workers)
     invariant uniqueJobs = List.all(j -> List.length(List.filter(v -> v.id == j.id, jobs)) == 1, jobs)
     invariant uniqueOffers = List.all(o -> List.length(List.filter(p -> p.workerId == o.workerId && p.jobId == o.jobId, offers)) == 1, offers)
@@ -37,7 +34,6 @@ data AssignmentProblem = { workers: List<Worker>, jobs: List<Job>, offers: List<
 // Derived loads and costs are evaluation outputs, never caller-supplied assertions.
 data Assignment = { workerId: WorkerId, jobId: JobId }
 data CandidatePlan = { assignments: List<Assignment> }
-    invariant assignmentLimit = List.length(assignments) <= 512
     invariant uniquePairs = List.all(a -> List.length(List.filter(b -> b.workerId == a.workerId && b.jobId == a.jobId, assignments)) == 1, assignments)
 // Contextual valid constraints are checked when this evaluation input is constructed.
 data EvaluationInput = { problem: AssignmentProblem, plan: CandidatePlan }

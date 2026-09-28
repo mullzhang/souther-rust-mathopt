@@ -1,4 +1,5 @@
 //! Independent MILP formulation. This module neither calls nor imports the evaluator.
+use crate::execution_limits::{MAX_LOAD_MINUTES, check_problem};
 use good_lp::{Expression, ProblemVariables, SolverModel, variable};
 use highs::{HighsModelStatus as Status, HighsSolutionStatus};
 use model::example::assignment::*;
@@ -102,6 +103,8 @@ impl Solve for Optimizer {
         run: &mut Run<'run>,
         problem: AssignmentProblem<'run>,
     ) -> Result<SearchOutcome<'run>, HostError> {
+        // Also protect callers that use the optimizer without App.
+        check_problem(problem)?;
         let started = Instant::now();
         let workers = problem.workers();
         let jobs = problem.jobs();
@@ -251,6 +254,7 @@ pub fn reconstruct<'run>(
     columns: &[f64],
     reported_objective: f64,
 ) -> Result<CandidatePlan<'run>, HostError> {
+    check_problem(problem)?;
     let workers = problem.workers();
     let offers = problem.offers();
     if columns.len() != offers.len() + 2 * workers.len() + 1 {
@@ -265,8 +269,8 @@ pub fn reconstruct<'run>(
         }
     }
     for (i, worker) in workers.iter().enumerate() {
-        let overtime = integer_in_range(columns[offers.len() + i], 46080)?;
-        let excess = integer_in_range(columns[offers.len() + workers.len() + i], 46080)?;
+        let overtime = integer_in_range(columns[offers.len() + i], MAX_LOAD_MINUTES)?;
+        let excess = integer_in_range(columns[offers.len() + workers.len() + i], MAX_LOAD_MINUTES)?;
         reported_cost +=
             overtime * worker.overtimeRate().value() + excess * worker.overtimePenalty().value();
     }

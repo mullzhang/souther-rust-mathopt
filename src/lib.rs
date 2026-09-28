@@ -1,5 +1,7 @@
+mod execution_limits;
 pub mod optimizer;
 
+use execution_limits::{ExecutionLimitExceeded, check_problem};
 use model::example::assignment::*;
 use model::{HostError, Library, Reading};
 use optimizer::{Optimizer, SolveOptions};
@@ -9,6 +11,20 @@ use std::path::Path;
 pub struct Response {
     pub document: Value,
     pub exit_code: u8,
+}
+
+impl From<ExecutionLimitExceeded> for Response {
+    fn from(limit: ExecutionLimitExceeded) -> Self {
+        Self {
+            document: json!({
+                "error": "execution_limit",
+                "path": limit.path,
+                "actual": limit.actual,
+                "limit": limit.limit,
+            }),
+            exit_code: 7,
+        }
+    }
 }
 
 pub struct App {
@@ -37,7 +53,7 @@ impl App {
     pub fn solve(&self, input: &str, options: SolveOptions) -> Result<Response, HostError> {
         let solver = Optimizer::new(options)?;
         let mut response = self.solve_with(input, &solver)?;
-        if response.exit_code != 2 {
+        if !matches!(response.exit_code, 2 | 7) {
             response.document["solver"] = solver
                 .statistics
                 .borrow()
@@ -57,6 +73,9 @@ impl App {
                     document: json!({"issues": issues.to_json()}), exit_code: 2,
                 }),
             };
+            if let Err(limit) = check_problem(problem) {
+                return Ok(limit.into());
+            }
             let result = solver.apply(run, problem)?;
             let (candidate, mut exit_code) = match result.case() {
                 SearchOutcomeCase::OptimalCandidate(found) => (Some(found.plan()), 0),
@@ -125,6 +144,9 @@ impl App {
                     });
                 }
             };
+            if let Err(limit) = check_problem(problem) {
+                return Ok(limit.into());
+            }
             let reviewed = match approval {
                 None => Review::new(&self.library).call(run, input)?,
                 Some(approved) => Confirm::new(&self.library).call(run, input, approved)?,
