@@ -1,5 +1,4 @@
 pub mod optimizer;
-pub mod verify;
 
 use model::example::assignment::*;
 use model::{HostError, Library, Reading};
@@ -16,6 +15,14 @@ pub struct App {
     library: Library,
 }
 
+fn decision_code(decision: Decision<'_>) -> u8 {
+    match decision.case() {
+        DecisionCase::Ready(_) | DecisionCase::Confirmed(_) => 0,
+        DecisionCase::RequiresApproval(_) => 5,
+        DecisionCase::Rejected(_) => 6,
+    }
+}
+
 impl App {
     /// Load the native model paired with this executable's generated binding.
     ///
@@ -29,42 +36,55 @@ impl App {
 
     pub fn solve(&self, input: &str, options: SolveOptions) -> Result<Response, HostError> {
         let solver = Optimizer::new(options)?;
-        let statistics = solver.statistics.clone();
-        let implementation = SolveImplementation::new(&self.library, solver);
-        let plan = PlanAssignments::bind(&self.library, &implementation);
-        self.library.run(|run| {
-            let problem = match AssignmentProblem::decode(run, input)? {
-                Reading::Value(problem) => problem,
-                Reading::Issues(issues) => {
-                    return Ok(Response {
-                        document: json!({"issues": issues.to_json()}),
-                        exit_code: 2,
-                    });
-                }
-            };
-            let result = plan.call(run, problem)?;
-            let exit_code = match result.search().case() {
-                SearchOutcomeCase::Optimal(_) => 0,
-                SearchOutcomeCase::Feasible(_) | SearchOutcomeCase::NoSolution(_) => 4,
-                SearchOutcomeCase::Infeasible(_) => 3,
-            };
-            if matches!(result.assessment().case(), AssessmentCase::Rejected(_)) {
-                return Err("Souther rejected a solver candidate after Rust verification".into());
-            }
-            let mut document: Value = serde_json::from_str(&result.encode())?;
-            document["solver"] = statistics
+        let mut response = self.solve_with(input, &solver)?;
+        if response.exit_code != 2 {
+            response.document["solver"] = solver
+                .statistics
                 .borrow()
                 .clone()
                 .ok_or("missing solver statistics")?;
+        }
+        Ok(response)
+    }
+
+    /// Orchestrate a solver and the independent Souther evaluator through domain contracts.
+    /// A replacement solver's claims never replace the evaluator's judgment.
+    pub fn solve_with(&self, input: &str, solver: &impl Solve) -> Result<Response, HostError> {
+        self.library.run(|run| {
+            let problem = match AssignmentProblem::decode(run, input)? {
+                Reading::Value(problem) => problem,
+                Reading::Issues(issues) => return Ok(Response {
+                    document: json!({"issues": issues.to_json()}), exit_code: 2,
+                }),
+            };
+            let result = solver.apply(run, problem)?;
+            let (candidate, mut exit_code) = match result.case() {
+                SearchOutcomeCase::OptimalCandidate(found) => (Some(found.plan()), 0),
+                SearchOutcomeCase::StoppedWithCandidate(found) => (Some(found.plan()), 4),
+                SearchOutcomeCase::Infeasible(_) => (None, 3),
+                SearchOutcomeCase::NoCandidate(_) => (None, 4),
+            };
+            let review = match candidate {
+                Some(plan) => {
+                    // valid: resolve the candidate's references in this specific problem.
+                    let input = EvaluationInput::new(run, problem, plan)?.into_result()?;
+                    let reviewed = Review::new(&self.library).call(run, input)?;
+                    if !reviewed.evaluation().feasible() {
+                        exit_code = 6;
+                    }
+                    serde_json::from_str(&reviewed.encode())?
+                }
+                None => Value::Null,
+            };
             Ok(Response {
-                document,
+                document: json!({"search": serde_json::from_str::<Value>(&result.encode())?, "review": review}),
                 exit_code,
             })
         })?
     }
 
-    /// Inspect or confirm a candidate against the supplied current problem.
-    /// This is a local demonstration of approval rules, not authentication or persistent approval.
+    /// Evaluate a saved or manually authored candidate without constructing an optimizer.
+    /// Contextual valid constraints run in the generated decoder before the evaluator runs.
     pub fn review(
         &self,
         input: &str,
@@ -72,6 +92,7 @@ impl App {
         approval: Option<bool>,
     ) -> Result<Response, HostError> {
         self.library.run(|run| {
+            // Decode both complete JSON documents before composing the contextual input.
             let problem = match AssignmentProblem::decode(run, input)? {
                 Reading::Value(problem) => problem,
                 Reading::Issues(issues) => {
@@ -81,7 +102,7 @@ impl App {
                     });
                 }
             };
-            let candidate = match CandidatePlan::decode(run, candidate)? {
+            let plan = match CandidatePlan::decode(run, candidate)? {
                 Reading::Value(plan) => plan,
                 Reading::Issues(issues) => {
                     return Ok(Response {
@@ -90,33 +111,28 @@ impl App {
                     });
                 }
             };
-            match approval {
-                None => {
-                    let result = Assess::new(&self.library).call(run, problem, candidate)?;
-                    let exit_code = match result.case() {
-                        AssessmentCase::Ready(_) => 0,
-                        AssessmentCase::RequiresApproval(_) => 5,
-                        AssessmentCase::Rejected(_) | AssessmentCase::Unavailable(_) => 6,
-                    };
-                    Ok(Response {
-                        document: serde_json::from_str(&result.encode())?,
-                        exit_code,
-                    })
+            let source = format!(
+                "{{\"problem\":{},\"plan\":{}}}",
+                problem.encode(),
+                plan.encode()
+            );
+            let input = match EvaluationInput::decode(run, &source)? {
+                Reading::Value(input) => input,
+                Reading::Issues(issues) => {
+                    return Ok(Response {
+                        document: json!({"issues": issues.to_json()}),
+                        exit_code: 2,
+                    });
                 }
-                Some(approved) => {
-                    let result =
-                        Confirm::new(&self.library).call(run, problem, candidate, approved)?;
-                    let exit_code = match result.case() {
-                        ConfirmationCase::Confirmed(_) => 0,
-                        ConfirmationCase::RequiresApproval(_) => 5,
-                        ConfirmationCase::Rejected(_) => 6,
-                    };
-                    Ok(Response {
-                        document: serde_json::from_str(&result.encode())?,
-                        exit_code,
-                    })
-                }
-            }
+            };
+            let reviewed = match approval {
+                None => Review::new(&self.library).call(run, input)?,
+                Some(approved) => Confirm::new(&self.library).call(run, input, approved)?,
+            };
+            Ok(Response {
+                document: serde_json::from_str(&reviewed.encode())?,
+                exit_code: decision_code(reviewed.decision()),
+            })
         })?
     }
 }

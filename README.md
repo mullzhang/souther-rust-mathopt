@@ -1,69 +1,142 @@
-# SoutherとRustによる作業割当計画
+# Southerによる最適化の入出力ドメインモデルの試作
 
-Southerで入出力モデル、計画の検査、残業承認の判断を定義し、Rustの `good_lp` とHiGHSで費用最小の作業割当を求めるCLIサンプルです。
-HiGHS本体はC++製です。
+最適化問題の入力と解候補をSoutherのドメインモデルとして実装し、Rustで実装した最適化器と接続する試作です。
+型による成立条件の検査、解候補の評価、求解結果の受け渡しを、実行可能なコードで確かめます。
 
-```text
-JSON → Southerの入力検証 → RustのMILP → Rustの独立検証
-                                      ↓
-JSON ← Southerの出力モデル ← Southerの計画検査と承認判断
+現在は作業割当問題を題材に、入力モデル、解候補、評価結果、採用判断までを実装しています。
+作業割当はこの構成を試すための一例であり、リポジトリの主題はSoutherと最適化器の責務をどう分けるかです。
+
+## 試作で確かめること
+
+- 入力データと解候補の意味を、Southerの型と成立条件で表す。
+- valid／hard／softを分け、実行不可能な候補も保持して原因を調べられるようにする。
+- Southerの評価器とRustの最適化器を独立させ、保存済みや手作業の候補も評価する。
+- ソルバーの終了状態、候補の実行可能性、採用判断を別々に扱う。
+
+```mermaid
+flowchart TD
+    input[入力データ] --> domain[Souther：入力ドメインモデル]
+    domain --> optimizer[Rust：最適化器]
+    optimizer --> candidate[解候補]
+    external[保存済みや手作業の解候補] --> candidate
+    domain --> valid[Souther：問題と解候補のvalid検査]
+    candidate --> valid
+    valid --> evaluator[Souther：hard／softの評価器]
+    evaluator --> result[評価結果と採用判断]
 ```
 
-最適な計画でも残業を含めば承認待ちです。
-最適性が未証明の実行可能な計画でも、業務条件を満たせば確定の対象になります。
-求解の終了状態と業務上の判断を分けて扱います。
+図はデータの流れを表します。
+評価器はソルバーを呼ばず、最適化器も評価器を呼びません。
+Rustのアプリケーション層が両方を順に呼び出します。
 
-## 環境構築と実行
+## ドメインモデルと制約の責務
 
-対象はmacOSのApple Siliconとx86_64、およびLinuxのx86_64とaarch64です。
-macOSのApple Siliconで動作を検証しました。
-Linux用の設定とCIは用意していますが、この作業時点ではLinuxで未実行です。
+| 種類 | 意味 | 実装する場所 |
+| --- | --- | --- |
+| valid | 入力や解候補の意味を一意に解釈できるための条件 | Southerの型と `invariant`。生成またはデコード時に検査 |
+| hard | 解候補が実行可能であるために満たすべき条件 | Southerの評価器。違反箇所と違反量を返す |
+| soft | 解候補の望ましさを比較するための条件 | Southerの評価器。違反に対するペナルティを返す |
 
-前提となるツールはPython 3、curl、tar、unzip、rustup、C/C++コンパイラー、libclangです。
-macOSではXcode Command Line ToolsとLLVM、Ubuntuでは `build-essential clang libclang-dev unzip` を用意してください。
-libclangを自動検出できない場合は、そのディレクトリーを `LIBCLANG_PATH` に指定します。
-macOSのHomebrew LLVMなら `export LIBCLANG_PATH="$(brew --prefix llvm)/lib"` です。
+一つの条件はいずれか一種類に分類し、評価の定義はSoutherに集約します。
+validを満たす候補は、hard違反があっても生成、保存、評価できます。
+この区別によって、実行可能解がまだ得られない開発段階でも候補を調べられます。
+
+Rustの最適化器は、候補を生成するための数理定式化を独立して持ちます。
+評価器との式の共有や自動変換は行いません。
+同じ業務要件を満たす定式化かどうかは、Southerの評価器と小問題の全列挙を使ったテストで確認します。
+
+## 実装の構成
+
+| ファイル | 担当 |
+| --- | --- |
+| `model/assignment.sou` | validの型、hard／soft評価、費用計算、採用判断、入出力と求解の契約 |
+| `src/optimizer.rs` | 独立したMILP定式化、HiGHS、終了状態、数値変換 |
+| `src/lib.rs` | 入出力のデコード、求解と評価の呼出し、結果の構成 |
+| `src/main.rs` | CLI、ファイル入出力、終了コード |
+| `tests/workflow.rs` | 評価器の単独実行、模擬ソルバー、全列挙、境界、CLI |
+
+[日本語版モデル](model-ja/assignment.sou) は同じ規則を日本語の識別子で記述した参照版です。
+Rustへの接続と `bin/build`、`bin/test` の対象には含めません。
+日本語版もSouther単体でコンパイルを確認しています。
+生成RustはSoutherの型を操作するための接続コードであり、MILPを生成するものではありません。
+
+## 現在の題材：作業割当
+
+作業者の稼働時間、担当資格、所要時間、費用を入力し、各作業の担当者を決める小規模な問題を使っています。
+最適化器はRustの `good_lp` で混合整数線形計画（MILP）を構築し、HiGHSで求解します。
+HiGHS本体はC++製です。
+
+| 区分 | この題材で扱う条件 |
+| --- | --- |
+| valid | IDと組合せの一意性、参照先と所要時間や費用の定義が存在すること |
+| hard | 全作業をちょうど1人に割り当てる、担当資格を満たす、残業上限を守る |
+| soft | 望ましい残業時間を超えた分に分単価でペナルティを課す |
+
+候補計画は割当の集合です。
+同じ組合せの重複はvalid違反ですが、異なる作業者への同一作業の重複割当や未割当はhard違反です。
+`CandidatePlan` は単体の形を検査し、問題と候補を組にした `EvaluationInput` の生成時に参照整合性を検査します。
+存在しない組合せは所要時間と費用を解釈できないため、ここで拒否します。
+担当不可の組合せでも評価できるよう、`Offer.qualified` と所要時間や費用は別の情報として持ちます。
+
+評価器は最初の違反で止まらず、すべての違反について規則、対象、実測値、許容値、違反量を返します。
+hard違反がある候補も通常の評価結果として保存できます。
+負荷、残業、費用は評価器が計算するため、候補JSONには含めません。
+費用は目的値の一部であり、値が大きいだけでvalidやhardの違反にはなりません。
+残業承認は採用方針として評価後に扱い、hard違反を承認で上書きすることはできません。
+
+## 環境構築
+
+前提はPython 3、curl、tar、unzip、rustup、C/C++コンパイラー、libclangです。
+macOSではXcode Command Line ToolsとLLVM、Ubuntuでは `build-essential clang libclang-dev unzip` を用意します。
+libclangを検出できない場合は `LIBCLANG_PATH` にディレクトリーを指定してください。
 
 ```bash
 bin/setup
 bin/build
-bin/run solve examples/regular.json
 bin/test
 ```
 
-`bin/setup` はJDK 25.0.4.1、Maven 3.9.16、CMake 4.1.2を `.tools/` に取得し、SHA-256を検証します。
+`bin/setup` は固定したJDK 25.0.4.1、Maven 3.9.16、CMake 4.1.2を `.tools/` に取得し、SHA-256を検証します。
 Rust 1.95.0はrustupで管理します。
-Souther本体とnative compilerは固定コミットのソースを `.deps/` に取得します。
-シェルの起動設定を書き換えず、Javaなどの環境変数はビルド用スクリプト内だけに設定します。
+Souther本体とnative compilerは固定コミットを `.deps/` に取得します。
 初回はインターネット接続が必要です。
+シェルの起動設定は変更しません。
 
-`bin/build` はSouther本体をソースからビルドし、native compilerで `model/assignment.sou` を共有ライブラリとRust bindingへ変換してから、アプリをビルドします。
-HiGHSもCargoの依存としてビルドし、静的リンクします。
+`bin/build` は `model/assignment.sou` から共有ライブラリと `build/rust/` の接続コードを生成し、Rustをビルドします。
 生成済みの `build/` は編集しません。
-`cargo run --locked -- solve examples/regular.json` も、`bin/build` の後に利用できます。
+HiGHSもCargoの依存としてビルドし、静的リンクします。
+macOSのApple Siliconで検証しています。
+macOSのx86_64、Linuxのx86_64とaarch64用の設定もありますが、それらの環境での実行は未確認です。
 
-## 残業の承認と計画の確定
+## 作業割当の実行例
 
 ```bash
-# 最適だが、30分の残業について承認が必要な計画
+# 通常の求解。search、review、solverを返す
+bin/run solve examples/regular.json
 bin/run solve examples/overtime.json
 
-# 入力条件に対して、保存済みの候補計画を検査する（終了コード5）
+# 最適化器を使わず、保存済みの候補を評価する
 bin/run review examples/overtime.json examples/overtime-plan.json
 
-# 未承認なので確定せず、RequiresApprovalを返す（終了コード5）
-bin/run confirm examples/overtime.json examples/overtime-plan.json
+# hard違反3件とsoftペナルティをまとめて返す（終了コード6）
+bin/run review examples/diagnostic.json examples/diagnostic-plan.json
 
-# 明示的な承認を与え、Confirmedを返す
+# soft制約を目的に含めると、残業を避ける割当が選ばれる
+bin/run solve examples/soft.json
+
+# 未承認なら承認待ち（終了コード5）、承認済みなら確定
+bin/run confirm examples/overtime.json examples/overtime-plan.json
 bin/run confirm examples/overtime.json examples/overtime-plan.json --approve-overtime
 
-# 残業を0分と偽った計画は、承認してもRejectedになる（終了コード6）
+# 承認済みでも未割当のある計画は却下（終了コード6）
 bin/run confirm examples/overtime.json examples/rejected-plan.json --approve-overtime
 ```
 
-`solve` の出力は `search`、`assessment`、技術情報の `solver` を含みます。
-通常例と残業例の最適費用はいずれも60で、残業例の内訳は割当費用30と残業費用30です。
-候補計画を保存する場合は、出力の `search.plan` だけをJSONファイルへ取り出します。
+通常例と残業例の最適費用は60です。
+`soft.json` に同じ残業計画を与えると、費用60、softペナルティ90、目的値150と評価されます。
+この問題を求解すると、残業を避ける費用120、ペナルティ0の計画が選ばれます。
+
+候補の保存と再評価は次のように行います。
 
 ```bash
 bin/run solve examples/overtime.json > build/result.json
@@ -71,114 +144,92 @@ python3 -c 'import json; d=json.load(open("build/result.json")); print(json.dump
 bin/run review examples/overtime.json build/plan.json
 ```
 
-`confirm` は、その時点で渡された問題と計画を再検査します。
-承認フラグはローカルサンプルの意思決定入力であり、本人認証、承認者権限、監査記録、DBへの保存は実装していません。
-出力の `Confirmed` も署名済みの証明書ではありません。
-外部から受け取った計画を利用するときは、現在の問題に対して再検査してください。
+`review` と `confirm` は `plan`、`evaluation`、`decision` を返します。
+`evaluation` は `feasible`、`hardViolations`、`softPenalties`、`loads`、`totalCost`、`softPenalty`、`objectiveValue` を含みます。
+hard違反が0件なら実行可能であり、softペナルティは実行可能性を変えません。
+目的値は `totalCost + softPenalty` です。
 
-## 入出力と終了コード
+`solve` の `search.type` はソルバーの状態を表します。
+`OptimalCandidate` はソルバーが最適終了した候補、`StoppedWithCandidate` は打切り時点の候補です。
+実行可能性の判断には、別の `review.evaluation.feasible` を使います。
+`Infeasible` はソルバーが実行不能と判定した場合、`NoCandidate` は候補を得ずに終了した場合です。
+候補がない場合の `review` は `null` です。
+通常のMIP求解から実行不可能な診断候補を自動生成する機能はありません。
+その場合も、手作業や別の探索方法で作った候補を `review` に渡して調査できます。
 
-入力には `workers`、`jobs`、`offers` の三つの配列が必要です。
-作業者は通常稼働分数、残業上限、残業1分あたりの費用を持ちます。
-`offers` にある組合せだけを担当可能とし、組合せごとに所要分数と割当費用を持たせます。
-時刻、作業順序、作業の分割は扱いません。
+承認フラグはローカルで与える意思決定であり、本人認証、権限、監査記録、DBへの保存は実装していません。
+確定時には、渡された現在の問題に対して必ず再評価します。
 
-| 値 | 範囲と単位 |
+## 作業割当モデルの入出力
+
+入力は `workers`、`jobs`、`offers` の配列です。
+作業者は `id`、`regularMinutes`、`overtimeLimit`、`overtimeRate`、`overtimeTarget`、`overtimePenalty` を持ちます。
+組合せは `workerId`、`jobId`、`minutes`、`cost`、`qualified` を持ちます。
+候補は `{"assignments": [{"workerId": "alice", "jobId": "job1"}]}` の形式です。
+
+| 値 | サンプルで扱う範囲 |
 | --- | --- |
 | ID | 英字で始まる英数字、`_`、`-`、最大64文字 |
-| 作業者数、ジョブ数、候補数 | 最大16、32、512 |
-| 通常稼働と残業上限 | 各0〜1440分 |
-| ジョブの所要時間 | 1〜1440分 |
+| 作業者数、作業数、組合せ数 | 最大16、32、512 |
+| 通常稼働、残業上限、残業の目安 | 各0〜1440分 |
+| 所要時間 | 1〜1440分 |
 | 割当費用 | 0〜1,000,000、整数の最小通貨単位 |
-| 残業の分単価 | 1〜10,000、同じ通貨単位／分 |
+| 残業費用とsoftペナルティの分単価 | 1〜10,000 |
 
-IDの重複、候補の重複、存在しない参照先をSoutherが拒否します。
-ジョブ0件は費用0の計画とし、作業者の負荷も0で返します。
-担当可能な候補がないジョブや容量不足は、形式が正しければ `Infeasible` になります。
-全作業者について、未割当の人も含めて負荷を出力します。
+これらの上限は、サンプルの入力規模と厳密な整数計算の範囲を定めるものです。
+候補の負荷を残業上限以内に制限するものではありません。
+全512組を選ぶ実行不可能な候補も評価でき、費用約79億、目的値約153億までの境界例をテストしています。
+時刻、作業順序、作業の分割は扱いません。
+
+### CLIの終了コード
 
 | 終了コード | 意味 |
 | --- | --- |
-| 0 | `solve`：最適終了。`review`：確定可能。`confirm`：確定済み |
-| 1 | ファイル、ライブラリ、ソルバー、変換などの技術エラー |
-| 2 | 入力JSONの構文またはドメイン成立条件の違反 |
-| 3 | `solve`：実行不能と確定 |
-| 4 | `solve`：探索打切り。`Feasible` または `NoSolution` |
-| 5 | `review`／`confirm`：残業の承認待ち |
-| 6 | `review`／`confirm`：計画を却下 |
+| 0 | 求解は最適終了かつ評価上実行可能。単独評価は確定可能、確定操作は確定済み |
+| 1 | ファイル、ライブラリ、ソルバー、数値変換などの技術エラー |
+| 2 | 入力問題または候補のvalid違反。評価前に拒否 |
+| 3 | ソルバーが実行不能と判定 |
+| 4 | 候補の有無によらず探索打切り。ただし候補のhard違反があれば6 |
+| 5 | 単独評価または確定操作で残業承認待ち |
+| 6 | 候補にhard違反あり。候補と評価結果を標準出力へ返す |
 
-`solve` の終了コード0は、残業承認の完了を意味しません。
-`assessment.type` を確認してください。
-入力不正は標準出力の `issues` にパス付きで返し、求解を行いません。
-技術エラーは標準エラー出力へJSONで返します。
+`solve` の終了コード0でも残業承認は完了していません。
+`review.decision` を確認してください。
+valid違反は標準出力の `issues`、技術エラーは標準エラー出力の `technical_error` で返します。
+ソルバー実装がvalid違反の候補を生成した場合は、生成契約の違反として技術エラーになります。
 
-```bash
-bin/run solve examples/infeasible.json  # 終了コード3
-bin/run solve examples/invalid.json     # 終了コード2
-bin/run solve examples/regular.json --time-limit 1
-```
+## 作業割当の定式化
 
-制限時間はHiGHSの求解に渡す値で、生成、入力検査、後処理まで含む厳密な実時間の上限ではありません。
-終了理由はHiGHSの実際の状態を保持し、解なしの打切りを実行不能に変換しません。
-最適性は浮動小数点ソルバーの判定であり、厳密演算による証明ではありません。
-相対ギャップと絶対ギャップの許容値は0、整数許容誤差は `1e-6`、スレッド数は1、乱数種は0です。
-
-## 定式化と実装の担当
-
-候補 `(w,j)` ごとに二値変数 `x[w,j]`、作業者ごとに残業分数 `o[w]` を置きます。
+Rustは担当可能な組合せを選ぶ二値変数 `x`、残業分数 `o`、望ましい残業からの超過 `s` を使います。
+担当不可の組合せの `x` は0に固定します。
 
 ```text
-min Σ cost[w,j] x[w,j] + Σ overtimeRate[w] o[w]
-s.t. Σ(w) x[w,j] = 1                              各ジョブ
+min Σ cost[w,j] x[w,j] + Σ overtimeRate[w] o[w] + Σ overtimePenalty[w] s[w]
+s.t. Σ(w) x[w,j] = 1
      Σ(j) minutes[w,j] x[w,j] ≤ regularMinutes[w] + o[w]
-     0 ≤ o[w] ≤ overtimeLimit[w], o[w] は整数
-     x[w,j] ∈ {0,1}                               担当可能な候補のみ
+     0 ≤ o[w] ≤ overtimeLimit[w]
+     s[w] ≥ o[w] - overtimeTarget[w], s[w] ≥ 0
 ```
 
-残業の単価が正なので、最適解では残業分数が必要最小限になります。
-Rustは返却された全変数の整数性を検査し、返却変数から計算した総費用をソルバーの目的値と照合します。
-探索途中の実行可能解には余分な残業が残る場合があるため、返却された変数と目的値の整合性を確認した後、必要な残業まで減らして候補を作ります。
-この改善だけで最適とは判定しません。
-`solver.incumbentObjective` と `solver.relativeGap` はソルバー返却時点の値、`solver.candidateCost` と計画の `totalCost` は調整後の費用です。
-
-| ファイル | 担当 |
-| --- | --- |
-| `model/assignment.sou` | 型、入力の成立条件、候補計画の検査、承認判断、外部 `solve` の契約、`planAssignments` の合成 |
-| `src/optimizer.rs` | `good_lp` の定式化、HiGHSの設定と求解、状態の変換、生成コンストラクターによる候補作成 |
-| `src/verify.rs` | 入力と候補を整数で照合する独立検証。ソルバー式やSoutherの検査処理を流用しない |
-| `src/lib.rs` | 生成decoder、behaviorの注入、同期 `Run`、生成encoderの接続 |
-| `src/main.rs` | CLI、ファイル入出力、終了コード |
-| `tests/workflow.rs` | 業務判断、状態変換、不正入力、不正候補、CLI、全列挙との比較 |
-
-日本語の識別子で同じ業務ルールを記述した [日本語版モデル](model-ja/assignment.sou) も用意しています。
-型名、フィールド名、振る舞い名、変数名、不変条件の名前、コメント、実行例の説明を日本語にしています。
-キーワード、標準型と標準関数、`value`、拒否理由のコード、入力IDの形式や数値制約は原版と共通です。
-日本語版はSouther単体で読むための別ファイルであり、`bin/build` と `bin/test` の対象には含めず、Rustには接続していません。
-CLIでは引き続き `model/assignment.sou` を使用します。
-
-CLIの入力検証の規則は `model/assignment.sou` に集約しています。
-Rustの独立検証とSoutherの業務検査は、ソルバー変換の誤りを検出するために意図して別々に実装しています。
-`Run` の外へ出すのはエンコード済みJSONであり、Southerの値をキャッシュしたり別スレッドへ渡したりしません。
+残業と超過の単価が正なので、最適解では余分な値が残りません。
+候補として渡すのは割当だけです。
+Southerが実際に必要な残業と費用を計算するため、打切り時のソルバー内部の余分な残業や超過は引き継ぎません。
+`solver.incumbentObjective`、`bestBound`、`relativeGap` はソルバーの定式化に対する値であり、評価器の目的値に読み替えません。
+最適性は数値ソルバーの判断で、数学的な厳密証明ではありません。
 
 ## 検証と配布
 
 `bin/test` はモデルを再生成し、書式、Clippy、Rustのテストを実行します。
-Southerの `example` 3件は生成時に検査します。
-Rustのテストには、種を固定した小問題80件と全列挙の最適費用の照合、数値上限、空集合、打切り状態、承認しても不正計画を確定できないことの確認を含みます。
-性能ベンチマークは行っていません。
-
-2026-09-28のmacOS実行では、Rustの17テスト、80件の全列挙照合、書式検査、Clippyがすべて成功しました。
-空の一時ディレクトリーでのセットアップは、検証済みダウンロードを再利用して展開と各ツールの起動を確認しました。
-配布物を空白を含む別ディレクトリーへ移し、`PATH=/usr/bin:/bin` の環境でヘルプ、求解、入力不正、実行不能、計画検査、確定の8操作を確認しました。
+Southerの実行例2件はモデルの生成時に検査します。
+Rustの19テストには、独立した全列挙による80問題の目的値照合を含みます。
+業務上のhard違反と生成契約違反、ソルバーの主張と評価結果を区別するテストもあります。
 
 ```bash
 bin/package
 ./dist/souther-rust-mathopt solve examples/regular.json
 ```
 
-`dist/` は同じOSとCPUアーキテクチャ向けの実行物です。
+配布物は同じOSとCPU向けです。
 実行ファイルと隣接する `lib/` を一緒に移動してください。
 実行時にJava、Maven、Cargoは不要ですが、OSのC/C++ランタイムは必要です。
-ビルドに使ったbindingと共有ライブラリの組を維持してください。
-
-固定版とライセンスの情報は [THIRD_PARTY.md](THIRD_PARTY.md)、環境の版とハッシュは [toolchain.lock.json](toolchain.lock.json)、Rust依存は [Cargo.lock](Cargo.lock) に記録しています。
+固定版とライセンスは [THIRD_PARTY.md](THIRD_PARTY.md)、環境の版とハッシュは [toolchain.lock.json](toolchain.lock.json)、Rust依存は [Cargo.lock](Cargo.lock) に記録しています。

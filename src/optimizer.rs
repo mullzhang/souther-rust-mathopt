@@ -1,4 +1,4 @@
-//! MILP formulation and the implementation of Souther's external solve behavior.
+//! Independent MILP formulation. This module neither calls nor imports the evaluator.
 use good_lp::{Expression, ProblemVariables, SolverModel, variable};
 use highs::{HighsModelStatus as Status, HighsSolutionStatus};
 use model::example::assignment::*;
@@ -119,9 +119,20 @@ impl Solve for Optimizer {
         let mut vars = ProblemVariables::new();
         let x: Vec<_> = offers
             .iter()
-            .map(|_| vars.add(variable().binary()))
+            .map(|o| vars.add(variable().binary().max(if o.qualified() { 1 } else { 0 })))
             .collect();
         let overtime: Vec<_> = workers
+            .iter()
+            .map(|w| {
+                vars.add(
+                    variable()
+                        .integer()
+                        .min(0)
+                        .max(w.overtimeLimit().value() as f64),
+                )
+            })
+            .collect();
+        let excess: Vec<_> = workers
             .iter()
             .map(|w| {
                 vars.add(
@@ -144,6 +155,9 @@ impl Solve for Optimizer {
         for (w, &v) in workers.iter().zip(&overtime) {
             objective += w.overtimeRate().value() as f64 * v;
         }
+        for (w, &v) in workers.iter().zip(&excess) {
+            objective += w.overtimePenalty().value() as f64 * v;
+        }
         // Keep the empty problem a normal MILP with a fixed zero column.
         let zero = vars.add(variable().min(0).max(0));
         objective += zero;
@@ -155,6 +169,9 @@ impl Solve for Optimizer {
             model.add_constraint(
                 (sum - overtime[i]).leq(workers[i].regularMinutes().value() as f64),
             );
+        }
+        for (i, w) in workers.iter().enumerate() {
+            model.add_constraint((overtime[i] - excess[i]).leq(w.overtimeTarget().value() as f64));
         }
         let mut native = model.try_into_inner()?;
         native
@@ -205,7 +222,7 @@ impl Solve for Optimizer {
         match completion {
             Completion::Infeasible => return Ok(made(Infeasible::new(run))?.into()),
             Completion::NoSolution(reason) => {
-                return Ok(made(NoSolution::new(run, &reason))?.into());
+                return Ok(made(NoCandidate::new(run, &reason))?.into());
             }
             _ => {}
         }
@@ -214,75 +231,48 @@ impl Solve for Optimizer {
             problem,
             solved.get_solution().columns(),
             solved.objective_value(),
-            completion == Completion::Optimal,
         )?;
-        self.statistics
-            .borrow_mut()
-            .as_mut()
-            .expect("statistics set above")["candidateCost"] = json!(plan.totalCost().value());
         Ok(match completion {
-            Completion::Optimal => made(Optimal::new(run, plan))?.into(),
-            Completion::Feasible(reason) => made(Feasible::new(run, plan, &reason))?.into(),
+            Completion::Optimal => made(OptimalCandidate::new(run, plan))?.into(),
+            Completion::Feasible(reason) => {
+                made(StoppedWithCandidate::new(run, plan, &reason))?.into()
+            }
             _ => unreachable!("non-solution cases returned above"),
         })
     }
 }
 
-/// Translate a raw solution and remove unnecessary overtime from a feasible incumbent.
-/// An optimal solution must already have minimum overtime because every rate is positive.
+/// Decode solver columns, checking numerical representation and its reported objective.
+/// Business feasibility belongs to the independent evaluator, invoked by the application.
+/// Overtime and soft slacks are solver internals; the candidate contains only decisions.
 pub fn reconstruct<'run>(
     run: &mut Run<'run>,
     problem: AssignmentProblem<'run>,
     columns: &[f64],
     reported_objective: f64,
-    optimal: bool,
 ) -> Result<CandidatePlan<'run>, HostError> {
     let workers = problem.workers();
     let offers = problem.offers();
-    let worker_index: HashMap<_, _> = workers
-        .iter()
-        .enumerate()
-        .map(|(i, w)| (w.id().value(), i))
-        .collect();
-    let mut assignments = Vec::new();
-    let mut used = vec![0_i64; workers.len()];
-    let mut cost = 0_i64;
-    let mut reported_cost = 0_i64;
-    // good_lp 1.15.3 passes columns in insertion order: offers, overtime, zero.
-    if columns.len() != offers.len() + workers.len() + 1 {
+    if columns.len() != offers.len() + 2 * workers.len() + 1 {
         return Err("unexpected HiGHS column count".into());
     }
+    let mut assignments = Vec::new();
+    let mut reported_cost = 0_i64;
     for (column, offer) in offers.iter().enumerate() {
         if binary(columns[column])? {
             assignments.push(made(Assignment::new(run, offer.workerId(), offer.jobId()))?);
-            used[worker_index[&offer.workerId().value()]] += offer.minutes().value();
-            cost += offer.cost().value();
             reported_cost += offer.cost().value();
         }
     }
-    let mut loads = Vec::new();
     for (i, worker) in workers.iter().enumerate() {
-        let extra = (used[i] - worker.regularMinutes().value()).max(0);
-        let raw_extra =
-            integer_in_range(columns[offers.len() + i], worker.overtimeLimit().value())?;
-        if raw_extra < extra {
-            return Err("solver overtime does not cover the assigned work".into());
-        }
-        reported_cost += raw_extra * worker.overtimeRate().value();
-        cost += extra * worker.overtimeRate().value();
-        let minutes = made(LoadMinutes::new(run, used[i]))?;
-        let extra = made(LoadMinutes::new(run, extra))?;
-        loads.push(made(WorkerLoad::new(run, worker.id(), minutes, extra))?);
+        let overtime = integer_in_range(columns[offers.len() + i], 46080)?;
+        let excess = integer_in_range(columns[offers.len() + workers.len() + i], 46080)?;
+        reported_cost +=
+            overtime * worker.overtimeRate().value() + excess * worker.overtimePenalty().value();
     }
     integer_in_range(columns[columns.len() - 1], 0)?;
-    if !reported_objective.is_finite()
-        || (reported_objective - reported_cost as f64).abs() > 1e-4
-        || (optimal && reported_cost != cost)
-    {
-        return Err("solver objective disagrees with reconstructed integer cost".into());
+    if !reported_objective.is_finite() || (reported_objective - reported_cost as f64).abs() > 1e-4 {
+        return Err("solver objective disagrees with decoded integer columns".into());
     }
-    let cost = made(TotalCost::new(run, cost))?;
-    let plan = made(CandidatePlan::new(run, &assignments, &loads, cost))?;
-    crate::verify::verify(problem, plan)?;
-    Ok(plan)
+    made(CandidatePlan::new(run, &assignments))
 }

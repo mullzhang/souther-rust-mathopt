@@ -1,5 +1,7 @@
 module example.assignment
 
+// valid: value representation, identifiers and unambiguous references.
+// The bounded input envelope keeps integer arithmetic exact in both runtimes.
 data WorkerId = String
     invariant String.matches("[A-Za-z][A-Za-z0-9_-]{0,63}", value)
 data JobId = String
@@ -15,12 +17,12 @@ data Cost = Int
 data MinuteRate = Int
     invariant value > 0 && value <= 10000
 data TotalCost = Int
-    invariant value >= 0 && value <= 1000000000
+    invariant value >= 0 && value <= 8000000000
 
-data Worker = { id: WorkerId, regularMinutes: Minutes, overtimeLimit: Minutes, overtimeRate: MinuteRate }
+data Worker = { id: WorkerId, regularMinutes: Minutes, overtimeLimit: Minutes, overtimeRate: MinuteRate, overtimeTarget: Minutes, overtimePenalty: MinuteRate }
 data Job = { id: JobId }
-// A listed pair means the worker is qualified for this job.
-data Offer = { workerId: WorkerId, jobId: JobId, minutes: Duration, cost: Cost }
+// Prices and durations exist even when qualified is false.
+data Offer = { workerId: WorkerId, jobId: JobId, minutes: Duration, cost: Cost, qualified: Bool }
 data AssignmentProblem = { workers: List<Worker>, jobs: List<Job>, offers: List<Offer> }
     invariant workerLimit = List.length(workers) <= 16
     invariant jobLimit = List.length(jobs) <= 32
@@ -31,101 +33,106 @@ data AssignmentProblem = { workers: List<Worker>, jobs: List<Job>, offers: List<
     invariant knownWorkers = List.all(o -> List.any(w -> w.id == o.workerId, workers), offers)
     invariant knownJobs = List.all(o -> List.any(j -> j.id == o.jobId, jobs), offers)
 
-// A candidate may violate the current problem. assess explains that refusal.
+// A candidate is a set of selected pairs. Missing or multiply assigned jobs are hard violations.
+// Derived loads and costs are evaluation outputs, never caller-supplied assertions.
 data Assignment = { workerId: WorkerId, jobId: JobId }
-data WorkerLoad = { workerId: WorkerId, minutes: LoadMinutes, overtime: LoadMinutes }
-data CandidatePlan = { assignments: List<Assignment>, loads: List<WorkerLoad>, totalCost: TotalCost }
-    invariant assignmentLimit = List.length(assignments) <= 32
-    invariant loadLimit = List.length(loads) <= 16
+data CandidatePlan = { assignments: List<Assignment> }
+    invariant assignmentLimit = List.length(assignments) <= 512
+    invariant uniquePairs = List.all(a -> List.length(List.filter(b -> b.workerId == a.workerId && b.jobId == a.jobId, assignments)) == 1, assignments)
+// Contextual valid constraints are checked when this evaluation input is constructed.
+data EvaluationInput = { problem: AssignmentProblem, plan: CandidatePlan }
+    invariant definedPairs = List.all(a -> List.any(o -> o.workerId == a.workerId && o.jobId == a.jobId, problem.offers), plan.assignments)
 
-data Optimal = { plan: CandidatePlan }
-data Feasible = { plan: CandidatePlan, termination: String }
-data Infeasible
-data NoSolution = { termination: String }
-data SearchOutcome = Optimal | Feasible | Infeasible | NoSolution
+data WorkerLoad = { workerId: WorkerId, minutes: LoadMinutes, overtime: LoadMinutes }
+data HardViolation = { rule: String, subject: String, actual: Int, limit: Int, amount: Int }
+data SoftPenalty = { rule: String, subject: String, actual: Int, limit: Int, amount: Int, weight: Int, penalty: Int }
+data Evaluation = { feasible: Bool, hardViolations: List<HardViolation>, softPenalties: List<SoftPenalty>, loads: List<WorkerLoad>, totalCost: TotalCost, softPenalty: Int, objectiveValue: Int }
 
 data Ready
 data RequiresApproval = { overtimeMinutes: LoadMinutes }
-data Rejected = { reason: String }
-data Unavailable
-data Assessment = Ready | RequiresApproval | Rejected | Unavailable
-data PlanningResult = { search: SearchOutcome, assessment: Assessment }
-data Confirmed = { plan: CandidatePlan }
-data Confirmation = Confirmed | RequiresApproval | Rejected
+data Rejected
+data Confirmed
+data Decision = Ready | RequiresApproval | Rejected | Confirmed
+data PlanReview = { plan: CandidatePlan, evaluation: Evaluation, decision: Decision }
 
+// These names describe solver termination, not the evaluator's feasibility judgment.
+data OptimalCandidate = { plan: CandidatePlan }
+data StoppedWithCandidate = { plan: CandidatePlan, termination: String }
+data Infeasible
+data NoCandidate = { termination: String }
+data SearchOutcome = OptimalCandidate | StoppedWithCandidate | Infeasible | NoCandidate
 behavior solve : (problem: AssignmentProblem) -> SearchOutcome
-    constructs Assignment, WorkerLoad, CandidatePlan, Optimal, Feasible, NoSolution
-
-behavior planAssignments : (problem: AssignmentProblem) -> PlanningResult
-    depends on solve
-let planAssignments (problem, solve) = {
-    let result = solve(problem)
-    let assessment = match result with
-        | Optimal { plan } -> assess(problem, plan)
-        | Feasible { plan, termination } -> assess(problem, plan)
-        | Infeasible -> Unavailable
-        | NoSolution { termination } -> Unavailable
-    PlanningResult { search = result, assessment = assessment }
-}
-
-behavior assess : (problem: AssignmentProblem, plan: CandidatePlan) -> Assessment
-let assess (problem, plan) = {
-    guard List.all(a -> List.length(List.filter(b -> b.jobId == a.jobId, plan.assignments)) == 1, plan.assignments)
-        && List.length(plan.assignments) == List.length(problem.jobs)
-        && List.all(j -> List.any(a -> a.jobId == j.id, plan.assignments), problem.jobs)
-        else Rejected { reason = "job_coverage" }
-    guard List.all(a -> List.any(o -> o.workerId == a.workerId && o.jobId == a.jobId, problem.offers), plan.assignments)
-        else Rejected { reason = "qualification" }
-    guard List.all(l -> List.length(List.filter(m -> m.workerId == l.workerId, plan.loads)) == 1, plan.loads)
-        && List.length(plan.loads) == List.length(problem.workers)
-        && List.all(w -> List.any(l -> l.workerId == w.id, plan.loads), problem.workers)
-        else Rejected { reason = "worker_coverage" }
-    guard List.all(w -> List.all(l -> l.workerId /= w.id ||
-        (l.minutes.value == minutesFor(problem, plan, w.id)
-         && l.overtime.value == overtimeFor(problem, plan, w)
-         && l.overtime.value <= w.overtimeLimit.value), plan.loads), problem.workers)
-        else Rejected { reason = "workload" }
-    guard plan.totalCost.value == costFor(problem, plan)
-        else Rejected { reason = "total_cost" }
-    let overtime = List.sum(List.map(l -> l.overtime.value, plan.loads))
-    if overtime > 0 then RequiresApproval { overtimeMinutes = LoadMinutes(overtime) }
-    else Ready
-}
-
-// Approval is an explicit caller decision, not a solver status.
-behavior confirm : (problem: AssignmentProblem, plan: CandidatePlan, overtimeApproved: Bool) -> Confirmation
-let confirm (problem, plan, overtimeApproved) =
-    match assess(problem, plan) with
-        | Ready -> Confirmed { plan = plan }
-        | RequiresApproval { overtimeMinutes } ->
-            if overtimeApproved then Confirmed { plan = plan }
-            else RequiresApproval { overtimeMinutes = overtimeMinutes }
-        | Rejected { reason } -> Rejected { reason = reason }
-        | Unavailable -> Rejected { reason = "unavailable" }
+    constructs Assignment, CandidatePlan, OptimalCandidate, StoppedWithCandidate, NoCandidate
 
 let selected (plan: CandidatePlan, offer: Offer) =
     List.any(a -> a.workerId == offer.workerId && a.jobId == offer.jobId, plan.assignments)
 let minutesFor (problem: AssignmentProblem, plan: CandidatePlan, workerId: WorkerId) =
     List.sum(List.map(o -> if o.workerId == workerId && selected(plan, o) then o.minutes.value else 0, problem.offers))
-let overtimeFor (problem: AssignmentProblem, plan: CandidatePlan, worker: Worker) = {
-    let extra = minutesFor(problem, plan, worker.id) - worker.regularMinutes.value
-    if extra > 0 then extra else 0
+let positive (amount: Int) = if amount > 0 then amount else 0
+let absolute (amount: Int) = if amount < 0 then 0 - amount else amount
+let overtimeFor (problem: AssignmentProblem, plan: CandidatePlan, worker: Worker) =
+    positive(minutesFor(problem, plan, worker.id) - worker.regularMinutes.value)
+
+// hard: each job exactly once, qualifications, and maximum overtime.
+// Collect every violation rather than stopping at the first one.
+behavior evaluate : (input: EvaluationInput) -> Evaluation
+let evaluate (input) = {
+    let problem = input.problem
+    let plan = input.plan
+    let coverage = List.flatMap(j -> {
+        let count = List.length(List.filter(a -> a.jobId == j.id, plan.assignments))
+        if count == 1 then [] else [HardViolation { rule = "job_coverage", subject = j.id.value, actual = count, limit = 1, amount = absolute(count - 1) }]
+    }, problem.jobs)
+    let qualifications = List.flatMap(o ->
+        if selected(plan, o) && Bool.not(o.qualified) then
+            [HardViolation { rule = "qualification", subject = o.workerId.value ++ "/" ++ o.jobId.value, actual = 1, limit = 0, amount = 1 }]
+        else [], problem.offers)
+    let loads = List.map(w -> WorkerLoad { workerId = w.id, minutes = LoadMinutes(minutesFor(problem, plan, w.id)), overtime = LoadMinutes(overtimeFor(problem, plan, w)) }, problem.workers)
+    let capacity = List.flatMap(w -> {
+        let overtime = overtimeFor(problem, plan, w)
+        if overtime <= w.overtimeLimit.value then [] else
+            [HardViolation { rule = "overtime_limit", subject = w.id.value, actual = overtime, limit = w.overtimeLimit.value, amount = overtime - w.overtimeLimit.value }]
+    }, problem.workers)
+    let violations = coverage ++ qualifications ++ capacity
+    // soft: overtime beyond the preferred target, weighted per excess minute.
+    let penalties = List.flatMap(w -> {
+        let overtime = overtimeFor(problem, plan, w)
+        let excess = positive(overtime - w.overtimeTarget.value)
+        if excess == 0 then [] else
+            [SoftPenalty { rule = "overtime_target", subject = w.id.value, actual = overtime, limit = w.overtimeTarget.value, amount = excess, weight = w.overtimePenalty.value, penalty = excess * w.overtimePenalty.value }]
+    }, problem.workers)
+    let cost = List.sum(List.map(o -> if selected(plan, o) then o.cost.value else 0, problem.offers))
+        + List.sum(List.map(w -> overtimeFor(problem, plan, w) * w.overtimeRate.value, problem.workers))
+    let penalty = List.sum(List.map(p -> p.penalty, penalties))
+    Evaluation { feasible = List.length(violations) == 0, hardViolations = violations, softPenalties = penalties, loads = loads, totalCost = TotalCost(cost), softPenalty = penalty, objectiveValue = cost + penalty }
 }
-let costFor (problem: AssignmentProblem, plan: CandidatePlan) =
-    List.sum(List.map(o -> if selected(plan, o) then o.cost.value else 0, problem.offers))
-    + List.sum(List.map(w -> overtimeFor(problem, plan, w) * w.overtimeRate.value, problem.workers))
 
-example assess
-    | "An empty valid plan is ready" :
-        (AssignmentProblem { workers = [], jobs = [], offers = [] },
-         CandidatePlan { assignments = [], loads = [], totalCost = TotalCost(0) }) -> Ready
-    | "A candidate cannot invent a cost" :
-        (AssignmentProblem { workers = [], jobs = [], offers = [] },
-         CandidatePlan { assignments = [], loads = [], totalCost = TotalCost(1) })
-        -> Rejected { reason = "total_cost" }
+// Adoption policy consumes the evaluation; it does not reimplement constraints.
+behavior review : (input: EvaluationInput) -> PlanReview
+let review (input) = {
+    let evaluation = evaluate(input)
+    let overtime = List.sum(List.map(l -> l.overtime.value, evaluation.loads))
+    let decision = if Bool.not(evaluation.feasible) then Rejected
+        else if overtime > 0 then RequiresApproval { overtimeMinutes = LoadMinutes(overtime) }
+        else Ready
+    PlanReview { plan = input.plan, evaluation = evaluation, decision = decision }
+}
+behavior confirm : (input: EvaluationInput, overtimeApproved: Bool) -> PlanReview
+let confirm (input, overtimeApproved) = {
+    let reviewed = review(input)
+    let decision = match reviewed.decision with
+        | Ready -> Confirmed
+        | RequiresApproval { overtimeMinutes } ->
+            if overtimeApproved then Confirmed else RequiresApproval { overtimeMinutes = overtimeMinutes }
+        | Rejected -> Rejected
+        | Confirmed -> Confirmed
+    PlanReview { plan = reviewed.plan, evaluation = reviewed.evaluation, decision = decision }
+}
 
-example confirm
-    | "Approval cannot override a rejected plan" :
-        (AssignmentProblem { workers = [], jobs = [], offers = [] },
-         CandidatePlan { assignments = [], loads = [], totalCost = TotalCost(1) }, true)
-        -> Rejected { reason = "total_cost" }
+example evaluate
+    | "An empty plan is evaluable and feasible" :
+        (EvaluationInput { problem = AssignmentProblem { workers = [], jobs = [], offers = [] }, plan = CandidatePlan { assignments = [] } })
+        -> Evaluation { feasible = true, hardViolations = [], softPenalties = [], loads = [], totalCost = TotalCost(0), softPenalty = 0, objectiveValue = 0 }
+    | "A missing assignment is a hard violation, not invalid data" :
+        (EvaluationInput { problem = AssignmentProblem { workers = [], jobs = [Job { id = JobId("j") }], offers = [] }, plan = CandidatePlan { assignments = [] } })
+        -> Evaluation { feasible = false, hardViolations = [HardViolation { rule = "job_coverage", subject = "j", actual = 0, limit = 1, amount = 1 }], softPenalties = [], loads = [], totalCost = TotalCost(0), softPenalty = 0, objectiveValue = 0 }

@@ -3,10 +3,10 @@
     {
       "id": "alice",
       "regularMinutes": 60,
-      "overtimeLimit": 30,
-      "overtimeRate": 2,
-      "overtimeTarget": 1440,
-      "overtimePenalty": 1
+      "overtimeLimit": 0,
+      "overtimeRate": 1,
+      "overtimeTarget": 0,
+      "overtimePenalty": 3
     },
     {
       "id": "bob",
@@ -32,9 +32,9 @@
     {
       "workerId": "alice",
       "jobId": "job1",
-      "minutes": 0,
+      "minutes": 30,
       "cost": 10,
-      "qualified": true
+      "qualified": false
     },
     {
       "workerId": "alice",
@@ -54,21 +54,21 @@
       "workerId": "bob",
       "jobId": "job1",
       "minutes": 30,
-      "cost": 40,
+      "cost": 100,
       "qualified": true
     },
     {
       "workerId": "bob",
       "jobId": "job2",
       "minutes": 30,
-      "cost": 40,
+      "cost": 100,
       "qualified": true
     },
     {
       "workerId": "bob",
       "jobId": "job3",
       "minutes": 30,
-      "cost": 40,
+      "cost": 100,
       "qualified": true
     }
   ]

@@ -11,6 +11,10 @@
     {
       "workerId": "alice",
       "jobId": "job3"
+    },
+    {
+      "workerId": "bob",
+      "jobId": "job1"
     }
   ]
 }
