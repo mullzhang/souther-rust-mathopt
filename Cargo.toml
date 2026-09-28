@@ -1,0 +1,15 @@
+[package]
+name = "souther-rust-mathopt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Souther domain rules and Rust MILP for assignment planning"
+
+[dependencies]
+model = { path = "build/rust" }
+good_lp = { version = "=1.15.3", default-features = false, features = ["highs"] }
+highs = "=2.4.0"
+serde_json = "1.0"
+
+[patch.crates-io]
+souther-binding-runtime = { path = ".deps/native/bindings/rust/runtime" }

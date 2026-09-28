@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/env"
+cd "$project_root"
+mkdir -p build
+# Compile the exact Souther source; do not consume a mutable remote SNAPSHOT.
+mvn -B -q -nsu -f .deps/souther/pom.xml -Dmaven.repo.local="$project_root/.tools/m2" \
+  -pl souther-compiler -am -DskipTests install
+(
+  cd .deps/native
+  mvn -B -q -nsu -Dmaven.repo.local="$project_root/.tools/m2" compile
+  cargo build --locked --manifest-path native/Cargo.toml
+  mvn -B -q -nsu -Dmaven.repo.local="$project_root/.tools/m2" exec:java \
+    -Dargs="--library $project_root/build/native --rust $project_root/build/rust --crate model $project_root/model"
+)
+cargo build --locked
+mkdir -p target/debug/lib
+case "$(uname -s)" in
+  Darwin) cp build/native/libsouther.dylib target/debug/lib/ ;;
+  Linux) cp build/native/libsouther.so target/debug/lib/ ;;
+esac

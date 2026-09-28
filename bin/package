@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/env"
+cd "$project_root"
+bin/build
+cargo build --release --locked
+mkdir -p dist/lib
+cp target/release/souther-rust-mathopt dist/
+cp target/debug/lib/* dist/lib/
+cp README.md THIRD_PARTY.md toolchain.lock.json Cargo.lock dist/
+python3 bin/package-licenses
+echo "Built dist/ for $(uname -s)-$(uname -m). Keep the executable and lib/ together."

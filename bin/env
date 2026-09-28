@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Source only. Do not change the invoking user's shell configuration.
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+case "$(uname -s)" in
+  Darwin)
+    export JAVA_HOME="$project_root/.tools/jdk/Contents/Home"
+    export PATH="$project_root/.tools/cmake/CMake.app/Contents/bin:$PATH"
+    ;;
+  Linux)
+    export JAVA_HOME="$project_root/.tools/jdk"
+    export PATH="$project_root/.tools/cmake/bin:$PATH"
+    ;;
+  *) echo "Unsupported OS" >&2; exit 1 ;;
+esac
+export PATH="$JAVA_HOME/bin:$project_root/.tools/apache-maven-3.9.16/bin:$PATH"
+export MAVEN_OPTS="-Xss4m"

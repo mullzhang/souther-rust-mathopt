@@ -1,0 +1,27 @@
+"""Collect dependency license notices with the local distribution."""
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+destination = root / "dist/licenses"
+destination.mkdir(parents=True, exist_ok=True)
+host = next(line.split(": ", 1)[1] for line in subprocess.check_output(
+    ["rustc", "-vV"], text=True).splitlines() if line.startswith("host: "))
+packages = {}
+for manifest in [root / "Cargo.toml", root / ".deps/native/native/Cargo.toml"]:
+    metadata = json.loads(subprocess.check_output([
+        "cargo", "metadata", "--locked", "--offline", "--filter-platform", host,
+        "--format-version", "1", "--manifest-path", str(manifest)], text=True))
+    for package in metadata["packages"]:
+        name = f'{package["name"]}-{package["version"]}'
+        folder = Path(package["manifest_path"]).parent
+        for source in folder.iterdir():
+            if source.is_file() and source.name.upper().startswith(("LICENSE", "COPYING", "NOTICE", "COPYRIGHT")):
+                shutil.copy2(source, destination / f"{name}-{source.name}")
+        if package["name"] == "highs-sys":
+            shutil.copy2(folder / "HiGHS/LICENSE.txt", destination / "HiGHS-LICENSE.txt")
+        packages[name] = {"license": package["license"], "repository": package["repository"]}
+shutil.copy2(root / ".deps/native/LICENSE", destination / "souther-native-LICENSE")
+(destination / "packages.json").write_text(json.dumps(packages, indent=2) + "\n")

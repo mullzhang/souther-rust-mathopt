@@ -1,0 +1,31 @@
+name: Build and verify
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux compiler prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev build-essential unzip
+      - name: macOS compiler prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+      - run: bin/setup
+      - run: bin/test
+      - run: bin/package
+      - name: Run packaged application outside the checkout
+        shell: bash
+        run: |
+          cp -R dist "$RUNNER_TEMP/mathopt"
+          cp examples/regular.json "$RUNNER_TEMP/problem.json"
+          cd "$RUNNER_TEMP"
+          ./mathopt/souther-rust-mathopt solve problem.json

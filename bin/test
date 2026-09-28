@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/env"
+cd "$project_root"
+bin/build
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked

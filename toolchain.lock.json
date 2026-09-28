@@ -1,0 +1,60 @@
+{
+  "platforms": {
+    "Darwin-arm64": {
+      "jdk": {
+        "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.4.1_1.tar.gz",
+        "sha256": "61979887f7506a24a57439ff99adb8b3a7fc89977d9cfe3b8984f58a981b7b9d"
+      },
+      "cmake": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-macos-universal.tar.gz",
+        "sha256": "3be85f5b999e327b1ac7d804cbc9acd767059e9f603c42ec2765f6ab68fbd367"
+      }
+    },
+    "Linux-x86_64": {
+      "jdk": {
+        "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_x64_linux_hotspot_25.0.4.1_1.tar.gz",
+        "sha256": "dbb698396d478e7fa2b1e50f4103324b2a99b90569ee27c33f2261f9215cf41e"
+      },
+      "cmake": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-linux-x86_64.tar.gz",
+        "sha256": "773cc679c3a7395413bd096523f8e5d6c39f8718af4e12eb4e4195f72f35e4ab"
+      }
+    },
+    "Linux-aarch64": {
+      "jdk": {
+        "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.4.1_1.tar.gz",
+        "sha256": "69df11a02cfa3ef7d7ca645e03edce6778ec090e100f6ae2b42097865730ac52"
+      },
+      "cmake": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-linux-aarch64.tar.gz",
+        "sha256": "0634996f918b3bab11f45522899c81c987b09c9a64d15f6a0d2bb51c42099534"
+      }
+    },
+    "Darwin-x86_64": {
+      "jdk": {
+        "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_x64_mac_hotspot_25.0.4.1_1.tar.gz",
+        "sha256": "e6229d9504f7922053ab31821b9e6bee8761daf7b026a3476d1a027563009880"
+      },
+      "cmake": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-macos-universal.tar.gz",
+        "sha256": "3be85f5b999e327b1ac7d804cbc9acd767059e9f603c42ec2765f6ab68fbd367"
+      }
+    }
+  },
+  "maven": {
+    "url": "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip",
+    "sha256": "5af3b743dd8b876b5c45da33b676251e5f1687712644abb4ee519ca56e1d89ce"
+  },
+  "sources": {
+    "native": {
+      "url": "https://codeload.github.com/souther-lang/souther-native-compiler/tar.gz/8a9143b3e6c01a775cd70f6ed77d3ad070fe946e",
+      "commit": "8a9143b3e6c01a775cd70f6ed77d3ad070fe946e",
+      "sha256": "ee91e19662bc3a604dd2433f892187de32c91c751adf91bb671a9d74275670dd"
+    },
+    "souther": {
+      "url": "https://codeload.github.com/souther-lang/souther/tar.gz/e1ca170702fb472c796959ffcc14a2e729ae689b",
+      "commit": "e1ca170702fb472c796959ffcc14a2e729ae689b",
+      "sha256": "709653fc4aa00671d97493a49a5812ae14592375a9417fe34e9baa99067e2f47"
+    }
+  }
+}

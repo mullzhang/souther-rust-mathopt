@@ -1,0 +1,29 @@
+{
+  "assignments": [
+    {
+      "workerId": "alice",
+      "jobId": "job1"
+    },
+    {
+      "workerId": "alice",
+      "jobId": "job2"
+    },
+    {
+      "workerId": "alice",
+      "jobId": "job3"
+    }
+  ],
+  "loads": [
+    {
+      "workerId": "alice",
+      "minutes": 90,
+      "overtime": 0
+    },
+    {
+      "workerId": "bob",
+      "minutes": 0,
+      "overtime": 0
+    }
+  ],
+  "totalCost": 60
+}

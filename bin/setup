@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Install pinned build dependencies inside this checkout, verifying every archive."""
+import hashlib
+import json
+import platform
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+LOCK = json.loads((ROOT / "toolchain.lock.json").read_text())
+
+
+def install(name, asset, destination, zipped=False):
+    marker = destination / ".verified"
+    if marker.exists() and marker.read_text() == asset["sha256"]:
+        print(f"{name}: verified installation present", flush=True)
+        return
+    archive = ROOT / ".tools/downloads" / (name + (".zip" if zipped else ".tar.gz"))
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if not archive.exists():
+        partial = archive.with_suffix(archive.suffix + ".part")
+        subprocess.run(["curl", "-fL", "--retry", "3", asset["url"], "-o", str(partial)], check=True)
+        partial.replace(archive)
+    actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if actual != asset["sha256"]:
+        raise SystemExit(f"Checksum mismatch: {archive}; remove it and retry")
+    if destination.exists():
+        raise SystemExit(f"Unverified installation exists: {destination}; move it aside first")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent) as work:
+        work = Path(work)
+        if zipped:
+            subprocess.run(["unzip", "-q", str(archive), "-d", str(work)], check=True)
+        else:
+            subprocess.run(["tar", "-xzf", str(archive), "-C", str(work)], check=True)
+        entries = list(work.iterdir())
+        if len(entries) != 1 or not entries[0].is_dir():
+            raise SystemExit(f"Unexpected archive layout: {archive}")
+        entries[0].rename(destination)
+    marker.write_text(asset["sha256"])
+    print(f"{name}: installed", flush=True)
+
+
+def main():
+    key = f"{platform.system()}-{platform.machine()}"
+    if key not in LOCK["platforms"]:
+        raise SystemExit(f"Unsupported platform: {key}")
+    for command in ["curl", "tar", "unzip", "rustup", "cc", "c++"]:
+        if shutil.which(command) is None:
+            raise SystemExit(f"Required prerequisite missing: {command}")
+    for name, asset in LOCK["platforms"][key].items():
+        install(name, asset, ROOT / ".tools" / name)
+    install("maven", LOCK["maven"], ROOT / ".tools/apache-maven-3.9.16", zipped=True)
+    for name, asset in LOCK["sources"].items():
+        install(name, asset, ROOT / ".deps" / name)
+    subprocess.run(["rustup", "toolchain", "install", "1.95.0", "--profile", "minimal",
+                    "--component", "clippy,rustfmt"], check=True)
+    print("Setup complete. Run bin/build.")
+
+
+if __name__ == "__main__":
+    main()

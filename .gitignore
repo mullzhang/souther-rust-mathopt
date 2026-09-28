@@ -1,0 +1,7 @@
+.tools/
+.deps/
+build/
+target/
+dist/
+__pycache__/
+.DS_Store

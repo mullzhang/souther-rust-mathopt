@@ -1,0 +1,65 @@
+{
+  "workers": [
+    {
+      "id": "alice",
+      "regularMinutes": 30,
+      "overtimeLimit": 0,
+      "overtimeRate": 2
+    },
+    {
+      "id": "bob",
+      "regularMinutes": 30,
+      "overtimeLimit": 0,
+      "overtimeRate": 3
+    }
+  ],
+  "jobs": [
+    {
+      "id": "job1"
+    },
+    {
+      "id": "job2"
+    },
+    {
+      "id": "job3"
+    }
+  ],
+  "offers": [
+    {
+      "workerId": "alice",
+      "jobId": "job1",
+      "minutes": 30,
+      "cost": 10
+    },
+    {
+      "workerId": "alice",
+      "jobId": "job2",
+      "minutes": 30,
+      "cost": 10
+    },
+    {
+      "workerId": "alice",
+      "jobId": "job3",
+      "minutes": 30,
+      "cost": 10
+    },
+    {
+      "workerId": "bob",
+      "jobId": "job1",
+      "minutes": 30,
+      "cost": 40
+    },
+    {
+      "workerId": "bob",
+      "jobId": "job2",
+      "minutes": 30,
+      "cost": 40
+    },
+    {
+      "workerId": "bob",
+      "jobId": "job3",
+      "minutes": 30,
+      "cost": 40
+    }
+  ]
+}
